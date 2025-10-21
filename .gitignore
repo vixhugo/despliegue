@@ -1,0 +1,585 @@
+Roxana Matamoros4_FN 7
+roxy_68695
+En el canal de voz
+Luis [Owner] — 23:27
+YA
+AHORA
+NOW
+Leonard - 01 — 23:29
+yo que
+Luis [Owner] — 23:29
+LEE MIRA
+MIRA
+OK
+K PASO
+Roxana Matamoros4_FN 7 — 23:34
+Imagen
+Luis [Owner] — 23:34
+YAP
+DEBES BORRAR LOS  PYCACHE NO?
+TE MANDO DATA.PY
+PERO ES MUY LARGO
+from fastapi import APIRouter, UploadFile, File, HTTPException
+from pydantic import BaseModel
+from app.services.data_processing import DataProcessor
+from app.database import db
+from typing import List, Dict, Any
+import os
+import logging
+import traceback
+import json
+from pathlib import Path
+from app.services.ml_models import MLModelsService
+
+router = APIRouter()
+
+class CleanFileRequest(BaseModel):
+    filename: str
+
+# configure a simple logger for this module (will be harmless if the app configures logging)
+logger = logging.getLogger("app.api.routes.data")
+if not logger.handlers:
+    # basic config: write to a logs file under project root
+    logs_dir = Path.cwd() / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(logs_dir / "server.log")
+    formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    # also add a stdout handler for immediate console visibility
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+    logger.setLevel(logging.INFO)
+
+@router.post("/upload")
+async def upload_data(file: UploadFile = File(...)):
+    """Subir datos CSV y guardar automáticamente en Supabase (datos_cargados)"""
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Solo archivos CSV")
+    
+    try:
+        content = await file.read()
+        processor = DataProcessor()
+        data_info = processor.load_csv(content, file.filename)
+
+        # Guardar el archivo en disco (carpeta uploads/original/)
+        uploads_dir = Path.cwd() / "uploads" / "original"
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        saved_path = uploads_dir / file.filename
+        with open(saved_path, "wb") as f:
+            f.write(content)
+
+        # Guardar automáticamente en Supabase (tabla datos_cargados)
+        import uuid
+        file_id = str(uuid.uuid4())
+        
+        insert_query = """
+        INSERT INTO datos_cargados (id, nombre_archivo, ruta_archivo, tamano_archivo, metadatos)
+        VALUES (%s, %s, %s, %s, %s)
+        """
+        
+        metadatos = {
+            "rows": data_info.get("rows", 0),
+            "columns": data_info.get("columns", 0),
+            "file_size": len(content),
+            "upload_timestamp": str(Path.cwd())
+        }
+        
+        db.execute_insert(insert_query, (
+            file_id,
+            file.filename,
+            str(saved_path),
+            len(content),
+            json.dumps(metadatos)  # Convert dict to JSON string
+        ))
+
+        logger.info(f"Archivo '{file.filename}' subido, guardado en {saved_path} y registrado en BD con ID: {file_id}")
+        return {
+            "message": "✅ Datos subidos y guardados en Supabase",
+            "data_info": data_info,
+            "saved_path": str(saved_path),
+            "filename": file.filename,
+            "file_id": file_id
+        }
+
+    except Exception as e:
+        # Log completo para facilitar debugging
+        tb = traceback.format_exc()
+        logger.error(f"Error en upload_data: {e}\n{tb}")
+        # En modo DEBUG devolver la traza en la respuesta para facilitar debugging local
+        if os.getenv("DEBUG", "0") == "1":
+            raise HTTPException(status_code=500, detail={"error": str(e), "traceback": tb})
+        raise HTTPException(status_code=500, detail=f"Error procesando archivo: {e}")
+
+
+def _resolve_dataset_path(raw_path: str) -> str:
+    """Resolve a dataset path stored in DB. Accepts absolute paths or relative paths like '/uploads/file.csv' or 'uploads/file.csv'."""
+    # If already exists, return
+    if os.path.exists(raw_path):
+        return raw_path
+
+... (Quedan 421 líneas)
+Minimizar
+message.txt
+21 KB
+DEBE TERMINAR EN 520 LINEAS
+K
+NO
+HAY 520
+XD
+HAY 520
+K
+TAS COPIANDO MAL
+COMPARTE
+MODELS.PY
+from fastapi import APIRouter, HTTPException
+from app.services.ml_models import MLModelsService
+from typing import List, Dict, Any, Optional
+from pydantic import BaseModel
+
+router = APIRouter()
+ml_service = MLModelsService()
+
+class TrainFileRequest(BaseModel):
+    filename: str
+    model_type: str
+    target_column: str
+    test_size: float = 0.2
+    parameters: Optional[Dict[str, Any]] = None
+
+@router.post("/train")
+async def train_model(
+    dataset_id: str,
+    model_type: str,
+    target_column: str,
+    epochs: int = 10,
+    learning_rate: float = 0.001,
+    test_size: float = 0.2,
+    parameters: Dict = None
+):
+    """Entrenar un modelo de ML con datos reales"""
+    try:
+        # Verificar que el dataset existe y está limpio
+        from app.database import db
+        query = """
+        SELECT estado_procesamiento, ruta_almacenamiento
+        FROM datasets
+        WHERE id = %s
+        """
+        datasets = db.execute_query(query, (dataset_id,))
+        
+        if not datasets:
+            raise HTTPException(status_code=404, detail="Dataset no encontrado")
+        
+        dataset = dict(datasets[0])
+        if dataset["estado_procesamiento"] not in ["LIMPIO", "SUBIDO"]:
+            raise HTTPException(status_code=400, detail="Dataset debe estar limpio antes del entrenamiento")
+        
+        # Entrenar modelo con datos reales
+        model_result = ml_service.train_model(
+            dataset_path=dataset["ruta_almacenamiento"],
+            model_type=model_type,
+            target_column=target_column,
+            test_size=test_size,
+            parameters=parameters or {}
+        )
+        
+        # Actualizar estado del dataset
+        update_query = """
+        UPDATE datasets 
+        SET estado_procesamiento = 'MODELO_ENTRENADO'
+        WHERE id = %s
+        """
+        db.execute_update(update_query, (dataset_id,))
+        
+        return model_result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/models")
+async def get_models():
+    """Obtener todos los modelos entrenados"""
+    return ml_service.get_models()
+
+@router.get("/models/{model_id}")
+async def get_model_by_id(model_id: str):
+    """Obtener un modelo específico por ID"""
+    model = ml_service.trained_models.get(model_id)
+    if not model:
+        raise HTTPException(status_code=404, detail="Modelo no encontrado")
+    return model
+
+@router.post("/train-file")
+async def train_model_with_file(request: TrainFileRequest):
+    """Entrenar un modelo con un archivo subido (sin BD) - DEPRECATED"""
+    try:
+        from pathlib import Path
+        
+        print(f"Recibida petición de entrenamiento: {request.filename}, {request.model_type}, {request.target_column}")
+        
+        file_path = Path.cwd() / "uploads" / request.filename
+        print(f"Buscando archivo en: {file_path}")
+        
+        if not file_path.exists():
+            print(f"Archivo no encontrado: {file_path}")
+            raise HTTPException(status_code=404, detail=f"Archivo no encontrado: {request.filename}")
+        
+        print(f"Archivo encontrado, iniciando entrenamiento...")
+        
+        # Entrenar modelo con archivo real
+        model_result = ml_service.train_model(
+            dataset_path=str(file_path),
+            model_type=request.model_type,
+... (Quedan 221 líneas)
+Minimizar
+message.txt
+13 KB
+320 LINEAS
+SI
+RESULTS.PY
+from fastapi import APIRouter, HTTPException
+from app.services.ml_models import MLModelsService
+from typing import List, Dict, Any
+
+router = APIRouter()
+ml_service = MLModelsService()
+Ampliar
+message.txt
+7 KB
+173 LINEAS
+SI
+AHORA SERVICES/
+AJA
+Imagen
+PRIMERO Q QUEDE ASI
+XD
+DATA_PROCESSING.PY
+import pandas as pd
+import numpy as np
+from typing import Dict, List, Any
+import io
+import os
+Ampliar
+message.txt
+6 KB
+140 LINEAS
+ML_MODELS.PY
+import pandas as pd
+import numpy as np
+from typing import Dict, Any, List
+from pathlib import Path
+
+Ampliar
+message.txt
+13 KB
+288 LINEAS
+Luis [Owner] — 23:42
+DATABASE.PY
+SI
+import os
+from pathlib import Path
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from dotenv import load_dotenv
+Ampliar
+message.txt
+4 KB
+90 LINEAS
+SI
+MAIN.PY
+27 LINEAS
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from app.api.routes import data, models, results
+
+app = FastAPI(title="ML Pipeline API", version="1.0.0")
+Ampliar
+message.txt
+1 KB
+el log tambien?
+server.log
+80 lineas
+# Server logs - cleaned2025-10-18 22:23:49,369 INFO app.api.routes.data Archivo 'student-mat.csv' subido y guardado en C:\lovely-data-flow-1\backend_new\uploads\student-mat.csv
+2025-10-18 23:01:07,237 INFO app.api.routes.data Archivo 'horarios-2025-09-29.csv' subido y guardado en C:\lovely-data-flow-1\backend_new\uploads\horarios-2025-09-29.csv
+2025-10-19 12:52:14,991 INFO app.api.routes.data Archivo 'ventas.csv' subido y guardado en C:\Users\Leonard\Documents\GitHub\lovely-data-flow\backend_new\uploads\ventas.csv
+2025-10-19 13:24:59,971 INFO app.api.routes.data Archivo 'ventas.csv' subido y guardado en C:\Users\Leonard\Documents\GitHub\lovely-data-flow\backend_new\uploads\ventas.csv
+2025-10-19 13:44:23,544 INFO app.api.routes.data Archivo 'ventas.csv' subido y guardado en C:\Users\Leonard\Documents\GitHub\lovely-data-flow\backend_new\uploads\ventas.csv
+2025-10-19 13:46:29,286 INFO app.api.routes.data Archivo 'ventas.csv' subido y guardado en C:\Users\Leonard\Documents\GitHub\lovely-data-flow\backend_new\uploads\ventas.csv
+Ampliar
+message.txt
+10 KB
+80
+EL .ENV ?
+Supabase PostgreSQL Configuration (Transaction Pooler)
+DATABASE_URL=postgresql://postgres.zioxdqkdwxctlhoefbxz:Franchesco9090@aws-1-us-east-1.pooler.supabase.com:6543/postgres
+.ENV
+# Supabase PostgreSQL Configuration (Transaction Pooler)
+DATABASE_URL=postgresql://postgres.zioxdqkdwxctlhoefbxz:Franchesco9090@aws-1-us-east-1.pooler.supabase.com:6543/postgres
+message.txt
+1 KB
+Vic — 23:45
+roxana mañana cpntinurp q tranajar
+Luis [Owner] — 23:45
+DONDE
+EXECUTE_TABLES.PY
+55 LINEAS
+#!/usr/bin/env python3
+"""
+Script para ejecutar las tablas SQL en Supabase
+"""
+import os
+import sys
+Ampliar
+message.txt
+2 KB
+SI
+setup.sql
+?
+73 lineas
+-- Crear tablas para el pipeline de ML (compatible con Supabase)
+
+-- 1. Tabla para datos cargados (CSV originales)
+CREATE TABLE IF NOT EXISTS datos_cargados (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    nombre_archivo VARCHAR(255) NOT NULL,
+    ruta_archivo TEXT NOT NULL,
+    tamano_archivo BIGINT,
+    fecha_carga TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    usuario_id UUID,
+    estado VARCHAR(50) DEFAULT 'cargado',
+    metadatos JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 2. Tabla para datos limpiados
+CREATE TABLE IF NOT EXISTS datos_limpiados (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    nombre_archivo_original VARCHAR(255) NOT NULL,
+    nombre_archivo_limpio VARCHAR(255) NOT NULL,
+    ruta_archivo_limpio TEXT NOT NULL,
+    datos_cargados_id UUID REFERENCES datos_cargados(id),
+    fecha_limpieza TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    usuario_id UUID,
+    estadisticas_limpieza JSONB, -- duplicados_eliminados, nulos_eliminados, etc.
+    estado VARCHAR(50) DEFAULT 'limpiado',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 3. Tabla para modelos entrenados
+CREATE TABLE IF NOT EXISTS modelos_entrenados (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    nombre_modelo VARCHAR(255) NOT NULL,
+    tipo_modelo VARCHAR(100) NOT NULL,
+    datos_limpiados_id UUID REFERENCES datos_limpiados(id),
+    fecha_entrenamiento TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    usuario_id UUID,
+    metricas_entrenamiento JSONB, -- accuracy, precision, recall, f1_score
+    configuracion_modelo JSONB, -- hiperparámetros, configuración
+    ruta_modelo TEXT, -- ruta del archivo .joblib
+    confusion_matrix JSONB,
+    estado VARCHAR(50) DEFAULT 'entrenado',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 4. Tabla para predicciones 
+---- blabblanla
+CREATE TABLE IF NOT EXISTS predicciones (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    modelo_id UUID REFERENCES modelos_entrenados(id),
+    datos_entrada JSONB,
+    prediccion JSONB,
+    confianza DECIMAL(5,4),
+    fecha_prediccion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    usuario_id UUID,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Índices para mejorar rendimiento
+CREATE INDEX IF NOT EXISTS idx_datos_cargados_fecha ON datos_cargados(fecha_carga);
+CREATE INDEX IF NOT EXISTS idx_datos_limpiados_datos_cargados ON datos_limpiados(datos_cargados_id);
+CREATE INDEX IF NOT EXISTS idx_modelos_entrenados_datos_limpiados ON modelos_entrenados(datos_limpiados_id);
+CREATE INDEX IF NOT EXISTS idx_modelos_entrenados_fecha ON modelos_entrenados(fecha_entrenamiento);
+CREATE INDEX IF NOT EXISTS idx_predicciones_modelo ON predicciones(modelo_id);
+
+-- Comentarios para documentación
+COMMENT ON TABLE datos_cargados IS 'Almacena los archivos CSV originales subidos por el usuario';
+COMMENT ON TABLE datos_limpiados IS 'Almacena los archivos CSV después del proceso de limpieza';
+COMMENT ON TABLE modelos_entrenados IS 'Almacena los modelos ML entrenados con sus métricas';
+COMMENT ON TABLE predicciones IS 'Almacena las predicciones realizadas por los modelos';
+Minimizar
+message.txt
+4 KB
+el run.py sigue igual?
+run.py
+if __name__ == "__main__":
+    import os
+    import uvicorn
+
+    host = os.getenv("HOST", "127.0.0.1")
+    env_port = os.getenv("PORT")
+Ampliar
+message.txt
+2 KB
+28 lineas
+q mas
+cleandata
+import { useState } from "react";
+import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { CheckCircle2, AlertTriangle, TrendingUp, Loader2 } from "lucide-react";
+import { Progress } from "@/components/ui/progress";
+Ampliar
+message.txt
+11 KB
+256 linees
+no hay
+xD
+INDEX
+import { useNavigate } from "react-router-dom";
+import { Database, Droplet, Brain, BarChart3 } from "lucide-react";
+import { StageCard } from "@/components/StageCard";
+import { Card } from "@/components/ui/card";
+
+const Index = () => {
+Ampliar
+message.txt
+5 KB
+121
+SI
+LOADDATA
+374 LINEAS
+import { useState, useRef } from "react";
+import { Upload, FileText, CheckCircle2, Loader2 } from "lucide-react";
+import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Progress } from "@/components/ui/progress";
+Ampliar
+message.txt
+15 KB
+Luis [Owner] — 23:52
+RESULTS
+import { useState } from "react";
+import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts";
+import { TrendingUp, Award, Target, Download, Loader2 } from "lucide-react";
+import { toast } from "sonner";
+Ampliar
+message.txt
+13 KB
+288 LINEAS
+TRAINMODEL.TSX
+277 LINEAS
+import { useState } from "react";
+import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Progress } from "@/components/ui/progress";
+Ampliar
+message.txt
+13 KB
+APP.TSX
+import { Toaster } from "@/components/ui/toaster";
+import { Toaster as Sonner } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { Sidebar } from "./components/Sidebar";
+Ampliar
+message.txt
+2 KB
+API
+406 LKINEAS
+const API_BASE_URL = 'http://localhost:8003/api';
+
+export interface Dataset {
+  id: string;
+  nombre_archivo: string;
+  tipo_archivo: string;
+Ampliar
+message.txt
+12 KB
+BORRA APP.CSS
+AHI TE ENVIE EL APP.TSX
+STAGECARD
+import { LucideIcon } from "lucide-react";
+import { Card } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
+
+interface StageCardProps {
+  title: string;
+Ampliar
+message.txt
+2 KB
+@Leonard - 01
+MODIFICASTE ALGUN COMPONENTE
+UI?
+# === LOGS ===
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+Ampliar
+message.txt
+1 KB
+BORRALO DEL FRONT
+O MEJOR
+PASALO A LA RAIZ
+Y PEGAS ESP
+﻿
+# === LOGS ===
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# === NODE / FRONTEND ===
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# === PYTHON / BACKEND ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+*.egg-info/
+venv/
+.env
+.envrc
+*.env
+
+# === DATA / UPLOADS ===
+uploads/
+data/
+*.csv
+
+# === IDEs / SISTEMA ===
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# === ARCHIVOS TEMPORALES ===
+*.tmp
+*.bak
+*.swp
